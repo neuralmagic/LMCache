@@ -41,10 +41,12 @@ class LMCacheEngineConfig:
     lookup_batch_timeout: float = 0.1
     # maximum number of requests in the sending queue, 0 for infinite
     lookup_queue_size: int = 100000
-    lookup_timeout: float = 1.0  # time in seconds to wait for a lookup request
+    lookup_timeout: float = 0.2  # time in seconds to wait for a lookup request
 
     # P2P (only) related configurations
     enable_p2p: bool = False  # whether to enable peer-to-peer sharing
+    p2p_socket_timeout: float = 0.1  # timeout for peer socket ops
+    p2p_retrieve_timeout: float = 1.0  # timeout for total retrieval time
 
     # Error handling related configurations
     error_handling: bool = False  # whether to enable error handling
@@ -94,8 +96,10 @@ class LMCacheEngineConfig:
         lookup_batch_size: int = 10,
         lookup_batch_timeout: float = 0.1,
         lookup_queue_size: int = 100000,
-        lookup_timeout: float = 1.0,
+        lookup_timeout: float = 0.2,
         enable_p2p: bool = False,
+        p2p_socket_timeout: float = 0.1,
+        p2p_retrieve_timeout: float = 1.0,
         error_handling: bool = False,
         enable_controller: Optional[bool] = False,
         lmcache_instance_id: str = "lmcache_default_instance",
@@ -116,7 +120,8 @@ class LMCacheEngineConfig:
             enable_blending, blend_recompute_ratio, blend_min_tokens,
             blend_special_str, lookup_url, distributed_url, lookup_batch_size,
             lookup_batch_timeout, lookup_queue_size, lookup_timeout,
-            enable_p2p, error_handling, enable_controller, lmcache_instance_id,
+            enable_p2p, p2p_socket_timeout, p2p_retrieve_timeout,
+            error_handling, enable_controller, lmcache_instance_id,
             controller_url, lmcache_worker_url, enable_nixl, nixl_role,
             nixl_peer_host, nixl_peer_port, nixl_buffer_size,
             nixl_buffer_device, nixl_enable_gc).validate()
@@ -138,8 +143,10 @@ class LMCacheEngineConfig:
         lookup_batch_size: int = 10,
         lookup_batch_timeout: float = 0.1,
         lookup_queue_size: int = 100000,
-        lookup_timeout: float = 1.0,
+        lookup_timeout: float = 0.2,
         enable_p2p: bool = False,
+        p2p_socket_timeout: float = 0.1,
+        p2p_retrieve_timeout: float = 1.0,
         error_handling: bool = False,
     ) -> "LMCacheEngineConfig":
         # TODO (ApostaC): Add nixl config
@@ -187,7 +194,8 @@ class LMCacheEngineConfig:
             enable_blending, blend_recompute_ratio, blend_min_tokens,
             blend_special_str, lookup_url, distributed_url, lookup_batch_size,
             lookup_batch_timeout, lookup_queue_size, lookup_timeout,
-            enable_p2p, error_handling).validate().log_config()
+            enable_p2p, p2p_socket_timeout, p2p_retrieve_timeout,
+            error_handling).validate().log_config()
 
     @staticmethod
     def from_file(file_path: str) -> "LMCacheEngineConfig":
@@ -220,9 +228,11 @@ class LMCacheEngineConfig:
         lookup_batch_size = config.get("lookup_batch_size", 10)
         lookup_batch_timeout = config.get("lookup_batch_timeout", 0.1)
         lookup_queue_size = config.get("lookup_queue_size", 100000)
-        lookup_timeout = config.get("lookup_timeout", 1.0)
+        lookup_timeout = config.get("lookup_timeout", 0.2)
 
         enable_p2p = config.get("enable_p2p", False)
+        p2p_socket_timeout = config.get("p2p_socket_timeout", 0.1)
+        p2p_retrieve_timeout = config.get("p2p_retrieve_timeout", 1.0)
 
         error_handling = config.get("error_handling", False)
 
@@ -275,6 +285,8 @@ class LMCacheEngineConfig:
             lookup_queue_size,
             lookup_timeout,
             enable_p2p,
+            p2p_socket_timeout,
+            p2p_retrieve_timeout,
             error_handling,
             enable_controller,
             lmcache_instance_id,
@@ -376,6 +388,12 @@ class LMCacheEngineConfig:
 
         config.enable_p2p = to_bool(
             parse_env(get_env_name("enable_p2p"), config.enable_p2p))
+        config.p2p_socket_timeout = to_float(
+            parse_env(get_env_name("p2p_socket_timeout"),
+                      config.p2p_socket_timeout))
+        config.p2p_retrieve_timeout = to_float(
+            parse_env(get_env_name("p2p_retrieve_timeout"),
+                      config.p2p_retrieve_timeout))
 
         config.error_handling = to_bool(
             parse_env(get_env_name("error_handling"), config.error_handling))
