@@ -32,10 +32,19 @@ class LMCacheEngineConfig:
     blend_min_tokens: int  # the minimum number of tokens for blending
     blend_special_str: str = " # # "  # the separator for blending
 
-    # P2P related configurations
-    enable_p2p: bool = False  # whether to enable peer-to-peer sharing
+    # Lookup server (and P2P) related configurations
     lookup_url: Optional[str] = None  # the url of the lookup server
     distributed_url: Optional[str] = None  # the url of the distributed server
+    # maximal number of requests sent in a batch to the lookup server
+    lookup_batch_size: int = 10
+    # time in seconds to wait before closing up a batch of requests
+    lookup_batch_timeout: float = 0.1
+    # maximum number of requests in the sending queue, 0 for infinite
+    lookup_queue_size: int = 100000
+    lookup_timeout: float = 1.0  # time in seconds to wait for a lookup request
+
+    # P2P (only) related configurations
+    enable_p2p: bool = False  # whether to enable peer-to-peer sharing
 
     # Error handling related configurations
     error_handling: bool = False  # whether to enable error handling
@@ -83,9 +92,13 @@ class LMCacheEngineConfig:
         blend_recompute_ratio: float = 0.15,
         blend_min_tokens: int = 256,
         blend_special_str: str = " # # ",
-        enable_p2p: bool = False,
         lookup_url: Optional[str] = None,
         distributed_url: Optional[str] = None,
+        lookup_batch_size: int = 10,
+        lookup_batch_timeout: float = 0.1,
+        lookup_queue_size: int = 100000,
+        lookup_timeout: float = 1.0,
+        enable_p2p: bool = False,
         error_handling: bool = False,
         enable_controller: Optional[bool] = False,
         lmcache_instance_id: str = "lmcache_default_instance",
@@ -105,8 +118,9 @@ class LMCacheEngineConfig:
             chunk_size, local_cpu, max_local_cpu_size, local_disk,
             max_local_disk_size, remote_url, remote_serde, save_decode_cache,
             enable_blending, blend_recompute_ratio, blend_min_tokens,
-            blend_special_str, enable_p2p, lookup_url, distributed_url,
-            error_handling, enable_controller, lmcache_instance_id,
+            blend_special_str, lookup_url, distributed_url, lookup_batch_size,
+            lookup_batch_timeout, lookup_queue_size, lookup_timeout,
+            enable_p2p, error_handling, enable_controller, lmcache_instance_id,
             controller_url, lmcache_worker_port, enable_nixl, nixl_role,
             nixl_peer_host, nixl_peer_port, nixl_buffer_size,
             nixl_buffer_device, nixl_enable_gc,
@@ -202,9 +216,14 @@ class LMCacheEngineConfig:
         blend_min_tokens = config.get("blend_min_tokens", 256)
         blend_special_str = config.get("blend_special_str", " # # ")
 
-        enable_p2p = config.get("enable_p2p", False)
         lookup_url = config.get("lookup_url", None)
         distributed_url = config.get("distributed_url", None)
+        lookup_batch_size = config.get("lookup_batch_size", 10)
+        lookup_batch_timeout = config.get("lookup_batch_timeout", 0.1)
+        lookup_queue_size = config.get("lookup_queue_size", 100000)
+        lookup_timeout = config.get("lookup_timeout", 1.0)
+
+        enable_p2p = config.get("enable_p2p", False)
 
         error_handling = config.get("error_handling", False)
 
@@ -252,9 +271,13 @@ class LMCacheEngineConfig:
             blend_recompute_ratio,
             blend_min_tokens,
             blend_special_str,
-            enable_p2p,
             lookup_url,
             distributed_url,
+            lookup_batch_size,
+            lookup_batch_timeout,
+            lookup_queue_size,
+            lookup_timeout,
+            enable_p2p,
             error_handling,
             enable_controller,
             lmcache_instance_id,
