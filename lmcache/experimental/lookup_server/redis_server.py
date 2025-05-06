@@ -5,7 +5,7 @@ from collections import namedtuple
 from enum import Enum, IntEnum
 from typing import AsyncGenerator, List, Optional, Tuple
 
-import redis
+import redis.asyncio as redis
 
 from lmcache.experimental.config import LMCacheEngineConfig
 from lmcache.experimental.lookup_server.abstract_server import \
@@ -110,12 +110,12 @@ class RedisLookupServer(LookupServerInterface):
         """
         while True:
             items = []
-            with self.connection.pipeline() as pipe:
+            async with self.connection.pipeline() as pipe:
                 async for item in self._get_batch():
                     self._add_to_pipeline(pipe, item)
                     items.append(item)
                 logger.debug(f"Sending a batch of {len(items)} requests")
-                results = pipe.execute(raise_on_error=False)
+                results = await pipe.execute(raise_on_error=False)
                 logger.debug("Batch results are ready")
 
             for item, result in zip(items, results):
