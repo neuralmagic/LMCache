@@ -77,6 +77,9 @@ class LMCacheEngineConfig:
     # HACK: explicit option to enable/disable nixl GC before it's mature enough
     nixl_enable_gc: Optional[bool] = False
 
+    # The url of the actual remote lmcache instance for auditing
+    audit_actual_remote_url: Optional[str] = None
+
     @staticmethod
     def from_defaults(
         chunk_size: int = 256,
@@ -104,7 +107,7 @@ class LMCacheEngineConfig:
         enable_controller: Optional[bool] = False,
         lmcache_instance_id: str = "lmcache_default_instance",
         controller_url: Optional[str] = None,
-        lmcache_worker_url: Optional[str] = None,
+        lmcache_worker_port: Optional[int] = None,
         enable_nixl: Optional[bool] = False,
         nixl_role: Optional[str] = None,
         nixl_peer_host: Optional[str] = None,
@@ -112,6 +115,7 @@ class LMCacheEngineConfig:
         nixl_buffer_size: Optional[int] = None,
         nixl_buffer_device: Optional[str] = None,
         nixl_enable_gc: Optional[bool] = False,
+        audit_actual_remote_url: Optional[str] = None,
     ) -> "LMCacheEngineConfig":
         # TODO (ApostaC): Add nixl config
         return LMCacheEngineConfig(
@@ -122,9 +126,10 @@ class LMCacheEngineConfig:
             lookup_batch_timeout, lookup_queue_size, lookup_timeout,
             enable_p2p, p2p_socket_timeout, p2p_retrieve_timeout,
             error_handling, enable_controller, lmcache_instance_id,
-            controller_url, lmcache_worker_url, enable_nixl, nixl_role,
+            controller_url, lmcache_worker_port, enable_nixl, nixl_role,
             nixl_peer_host, nixl_peer_port, nixl_buffer_size,
-            nixl_buffer_device, nixl_enable_gc).validate()
+            nixl_buffer_device, nixl_enable_gc,
+            audit_actual_remote_url).validate()
 
     @staticmethod
     def from_legacy(
@@ -240,7 +245,7 @@ class LMCacheEngineConfig:
         lmcache_instance_id = config.get("lmcache_instance_id",
                                          "lmcache_default_instance")
         controller_url = config.get("controller_url", None)
-        lmcache_worker_url = config.get("lmcache_worker_url", None)
+        lmcache_worker_port = config.get("lmcache_worker_port", None)
 
         enable_nixl = config.get("enable_nixl", False)
         nixl_role = config.get("nixl_role", None)
@@ -249,6 +254,8 @@ class LMCacheEngineConfig:
         nixl_buffer_size = config.get("nixl_buffer_size", None)
         nixl_buffer_device = config.get("nixl_buffer_device", None)
         nixl_enable_gc = config.get("nixl_enable_gc", False)
+
+        audit_actual_remote_url = config.get("audit_actual_remote_url", None)
 
         match local_disk:
             case None:
@@ -291,7 +298,7 @@ class LMCacheEngineConfig:
             enable_controller,
             lmcache_instance_id,
             controller_url,
-            lmcache_worker_url,
+            lmcache_worker_port,
             enable_nixl,
             nixl_role,
             nixl_peer_host,
@@ -299,6 +306,7 @@ class LMCacheEngineConfig:
             nixl_buffer_size,
             nixl_buffer_device,
             nixl_enable_gc,
+            audit_actual_remote_url,
         ).validate().log_config()
 
     @staticmethod
@@ -407,8 +415,9 @@ class LMCacheEngineConfig:
         config.lmcache_instance_id = lmcache_instance_id
         config.controller_url = parse_env(get_env_name("controller_url"),
                                           config.controller_url)
-        config.lmcache_worker_url = parse_env(
-            get_env_name("lmcache_worker_url"), config.lmcache_worker_url)
+        config.lmcache_worker_port = to_int(
+            parse_env(get_env_name("lmcache_worker_port"),
+                      config.lmcache_worker_port))
 
         config.enable_nixl = to_bool(
             parse_env(get_env_name("enable_nixl"), config.enable_nixl))
@@ -425,6 +434,9 @@ class LMCacheEngineConfig:
             get_env_name("nixl_buffer_device"), config.nixl_buffer_device)
         config.nixl_enable_gc = to_bool(
             parse_env(get_env_name("nixl_enable_gc"), config.nixl_enable_gc))
+        config.audit_actual_remote_url = parse_env(
+            get_env_name("audit_actual_remote_url"),
+            config.audit_actual_remote_url)
         return config.validate().log_config()
 
     def to_original_config(self) -> orig_config.LMCacheEngineConfig:
