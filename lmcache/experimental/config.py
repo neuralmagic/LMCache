@@ -378,8 +378,6 @@ class LMCacheEngineConfig:
         assert blend_special_str is not None
         config.blend_special_str = blend_special_str
 
-        config.enable_p2p = to_bool(
-            parse_env(get_env_name("enable_p2p"), config.enable_p2p))
         config.lookup_url = parse_env(get_env_name("lookup_url"),
                                       config.lookup_url)
         config.distributed_url = parse_env(get_env_name("distributed_url"),
