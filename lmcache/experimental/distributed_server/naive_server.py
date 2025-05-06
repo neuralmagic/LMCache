@@ -51,6 +51,7 @@ class NaiveDistributedServer(DistributedServerInterface):
         host, port = self.url.split(":")
         self.host = host
         self.port = int(port)
+        self.socket_timeout = config.p2p_socket_timeout
 
         self.loop = loop
         self.thread = threading.Thread(target=self.loop.run_forever)
@@ -117,26 +118,33 @@ class NaiveDistributedServer(DistributedServerInterface):
         # connection for 100 times.
         # However, too many live sockets could cause file descriptor exhaustion
         # (i.e., Too many open files).
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.connect((host, port))
-        logger.debug(f"Peer connection created at {host}:{port}")
+        try:
+            with socket.socket(socket.AF_INET,
+                               socket.SOCK_STREAM) as client_socket:
+                client_socket.settimeout(self.socket_timeout)
+                client_socket.connect((host, port))
+                logger.debug(f"Peer connection created at {host}:{port}")
 
-        async with self.async_socket_lock:
-            client_socket.sendall(
-                ClientMetaMessage(Constants.CLIENT_GET, key, 0,
-                                  MemoryFormat(1), torch.float16,
-                                  torch.Size([0, 0, 0, 0])).serialize())
+                async with self.async_socket_lock:
+                    client_socket.sendall(
+                        ClientMetaMessage(Constants.CLIENT_GET, key, 0,
+                                          MemoryFormat(1), torch.float16,
+                                          torch.Size([0, 0, 0,
+                                                      0])).serialize())
 
-            data = client_socket.recv(ServerMetaMessage.packlength())
+                    data = client_socket.recv(ServerMetaMessage.packlength())
 
-        meta = ServerMetaMessage.deserialize(data)
-        if meta.code != Constants.SERVER_SUCCESS:
+                meta = ServerMetaMessage.deserialize(data)
+                if meta.code != Constants.SERVER_SUCCESS:
+                    return None
+
+                async with self.async_socket_lock:
+                    memory_obj = self.receive_all_client(meta, client_socket)
+
+                return memory_obj
+        except (socket.error, Exception) as e:
+            logger.error(f"Peer socket error: {e}")
             return None
-
-        async with self.async_socket_lock:
-            memory_obj = self.receive_all_client(meta, client_socket)
-
-        return memory_obj
 
     async def receive_all_server(self, reader, n):
         data = bytearray()
