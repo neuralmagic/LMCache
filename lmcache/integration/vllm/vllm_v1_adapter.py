@@ -11,10 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import threading
+from collections import defaultdict
+from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from functools import cached_property
+from queue import Queue
+from typing import TYPE_CHECKING, Optional, Any, Callable, Sequence
 
 import torch
 import vllm.envs as envs
@@ -301,6 +304,68 @@ class LMCacheConnectorMetadata(KVConnectorMetadata):
         self.requests.append(req_meta)
 
 
+@dataclass
+class ReqState:
+    """Per-request state for tracking async transfers."""
+    saves_pending: int = 0
+    finished: bool = False
+
+
+class AsyncSaver:
+    """Manage async saving in separate thread."""
+
+    def __init__(self):
+        self._async_save_lock = threading.Lock()
+        self._async_save_reqs = defaultdict[str, ReqState](ReqState)
+        self._async_save_thread = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="LMCache_AsyncSave")
+        self._finished_saving_reqs = Queue[str]()
+
+    def dispatch_async_save_requests(
+            self, requests: Sequence[ReqMeta],
+            do_save: Callable[[ReqMeta], None]) -> None:
+        with self._async_save_lock:
+            # Dispatch saves to separate thread.
+            for request in requests:
+                save_spec = request.save_spec
+                if save_spec is not None and save_spec.can_save:
+                    self._async_save_reqs[request.req_id].saves_pending += 1
+                    self._async_save_thread.submit(self._do_async_save_request,
+                                                   request, do_save)
+
+    def _do_async_save_request(self, request: ReqMeta,
+                               do_save: Callable[[ReqMeta], None]) -> None:
+        try:
+            do_save(request)
+        finally:
+            req_id = request.req_id
+            req_state = self._async_save_reqs[req_id]
+            with self._async_save_lock:
+                req_state.saves_pending -= 1
+                # If request has finished generating and sending, put in
+                # finished queue.
+                if req_state.finished and not req_state.saves_pending:
+                    self._finished_saving_reqs.put_nowait(req_id)
+                    del self._async_save_reqs[req_id]
+
+    def get_finished(self, finished_req_ids: set[str]) -> set[str]:
+        """Finished loading, saving request ids."""
+        finished_reqs = set()
+        if self._async_save_reqs:
+            for req_id in finished_req_ids:
+                if req_state := self._async_save_reqs.get(req_id):
+                    with self._async_save_lock:
+                        req_state.finished = True
+                        if req_state.finished and not req_state.saves_pending:
+                            finished_reqs.add(req_id)
+                            del self._async_save_reqs[req_id]
+
+        finished_queue = self._finished_saving_reqs
+        while not finished_queue.empty():
+            finished_reqs.add(finished_queue.get_nowait())
+        return finished_reqs
+
+
 class LMCacheConnectorV1Impl:
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole,
@@ -345,6 +410,12 @@ class LMCacheConnectorV1Impl:
             vllm_config.kv_transfer_config.get_from_extra_config(
                 "skip_last_n_tokens", 0)
 
+        if hasattr(parent, "get_finished"):
+            self._async_saver: Optional[AsyncSaver] = AsyncSaver()
+        else:
+            # Compatibility with older version of vLLM V1 Connector API.
+            self._async_saver = None
+
     def _init_kv_caches_from_forward_context(
             self, forward_context: "ForwardContext"):
         for layer_name in forward_context.no_compile_layers:
@@ -357,6 +428,11 @@ class LMCacheConnectorV1Impl:
             if layer_name not in self.kv_caches:
                 self.kv_caches[layer_name] = attn_layer.kv_cache[\
                         forward_context.virtual_engine]
+
+    @cached_property
+    def kv_caches_list(self) -> list[torch.Tensor]:
+        assert self.kv_caches
+        return list(self.kv_caches.values())
 
     ####################
     # Worker side APIs
@@ -382,7 +458,7 @@ class LMCacheConnectorV1Impl:
         assert isinstance(metadata, LMCacheConnectorMetadata)
 
         assert len(self.kv_caches) > 0
-        kvcaches = list(self.kv_caches.values())
+        kvcaches = self.kv_caches_list
 
         attn_metadata = forward_context.attn_metadata
         if attn_metadata is None:
@@ -471,52 +547,63 @@ class LMCacheConnectorV1Impl:
         connector_metadata = self._parent._get_connector_metadata()
         assert isinstance(connector_metadata, LMCacheConnectorMetadata)
 
-        assert len(self.kv_caches) > 0
-        kvcaches = list(self.kv_caches.values())
+        if not connector_metadata.requests:
+            return
 
-        # HACK: getting chunk size to correctly calculate store mask
+        if self._async_saver is not None:
+            self._async_saver.dispatch_async_save_requests(
+                connector_metadata.requests, self.do_save_request)
+        else:
+            # No async, transfer synchronously (original behaviour)
+            for request in connector_metadata.requests:
+                self.do_save_request(request)
+
+    def do_save_request(self, request: ReqMeta):
+        save_spec = request.save_spec
+        if not save_spec or not save_spec.can_save:
+            return
+        token_ids = request.token_ids
+        assert isinstance(token_ids, torch.Tensor)
+        assert token_ids.is_cpu
+
+        slot_mapping = request.slot_mapping
+        assert isinstance(slot_mapping, torch.Tensor)
+        assert len(slot_mapping) == len(token_ids)
+
+        # TODO: have a pre-allocated buffer to hold the slot_mappings
+        slot_mapping = slot_mapping.cuda()
+        # NOTE: In PD setting, lmcache_engine.lookup() will always return
+        # 0 if there is no local storage configured. In this case, we
+        # should rely on the slip_leading_tokens in save_spec to avoid
+        # transmit the already saved tokens again.
         assert self.lmcache_engine is not None
+        skip_leading_tokens = max(self.lmcache_engine.lookup(token_ids),
+                                  save_spec.skip_leading_tokens)
+        if skip_leading_tokens == len(token_ids):
+            return  # skip this request
+        # Align to lmcache chunk size
         lmcache_chunk_size = self.lmcache_engine.config.chunk_size
+        skip_leading_tokens = skip_leading_tokens // \
+                              lmcache_chunk_size * lmcache_chunk_size
 
-        for request in connector_metadata.requests:
-            save_spec = request.save_spec
-            if save_spec is None or not save_spec.can_save:
-                continue
+        store_mask = torch.ones_like(token_ids, dtype=torch.bool)
+        store_mask[:skip_leading_tokens] = False
 
-            token_ids = request.token_ids
-            assert isinstance(token_ids, torch.Tensor)
-            assert token_ids.is_cpu
+        logger.info("Storing KV cache for %d out of %d tokens for request %s",
+                    len(token_ids) - skip_leading_tokens, len(token_ids),
+                    request.req_id)
+        self.lmcache_engine.store(token_ids,
+                                  mask=store_mask,
+                                  kvcaches=self.kv_caches_list,
+                                  slot_mapping=slot_mapping,
+                                  offset=skip_leading_tokens)
 
-            slot_mapping = request.slot_mapping
-            assert isinstance(slot_mapping, torch.Tensor)
-            assert len(slot_mapping) == len(token_ids)
-
-            # TODO: have a pre-allocated buffer to hold the slot_mappings
-            slot_mapping = slot_mapping.cuda()
-            # NOTE: In PD setting, lmcache_engine.lookup() will always return
-            # 0 if there is no local storage configured. In this case, we
-            # should rely on the slip_leading_tokens in save_spec to avoid
-            # transmit the already saved tokens again.
-            skip_leading_tokens = max(self.lmcache_engine.lookup(token_ids),
-                                      save_spec.skip_leading_tokens)
-            if skip_leading_tokens == len(token_ids):
-                continue  # skip this request
-            # Align to lmcache chunk size
-            skip_leading_tokens = skip_leading_tokens // \
-                    lmcache_chunk_size * lmcache_chunk_size
-
-            store_mask = torch.ones_like(token_ids, dtype=torch.bool)
-            store_mask[:skip_leading_tokens] = False
-
-            logger.info(
-                "Storing KV cache for %d out of %d tokens for request %s",
-                len(token_ids) - skip_leading_tokens, len(token_ids),
-                request.req_id)
-            self.lmcache_engine.store(token_ids,
-                                      mask=store_mask,
-                                      kvcaches=kvcaches,
-                                      slot_mapping=slot_mapping,
-                                      offset=skip_leading_tokens)
+    def get_finished(
+        self, finished_req_ids: set[str]
+    ) -> tuple[Optional[set[str]], Optional[set[str]]]:
+        """Finished loading, saving request ids."""
+        assert self._async_saver is not None
+        return None, self._async_saver.get_finished(finished_req_ids)
 
     ###################
     # Scheduler side APIs
@@ -656,3 +743,13 @@ class LMCacheConnectorV1Impl:
                 meta.add_request(req_meta)
 
         return meta
+
+    def request_finished(
+        self,
+        request: "Request",
+        block_ids: list[int],
+    ) -> tuple[bool, Optional[dict[str, Any]]]:
+        assert self._async_saver is not None
+        # Return True to indicate that saving may be happening
+        # asynchronously.
+        return True, None
