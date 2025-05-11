@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import threading
 from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
@@ -373,6 +374,7 @@ class LMCacheConnectorV1Impl:
         self._parent = parent
         self.kv_role = vllm_config.kv_transfer_config.kv_role
         is_tp = vllm_config.parallel_config.tensor_parallel_size > 1
+        self.do_async_save = hasattr(parent, "get_finished")
         if role == KVConnectorRole.SCHEDULER:
             self.lookup_client = LMCacheLookupClient(role, is_tp, vllm_config)
         else:
@@ -385,6 +387,14 @@ class LMCacheConnectorV1Impl:
             if vllm_config.parallel_config.rank == 0:
                 self.lookup_server = LMCacheLookupServer(
                     self.lmcache_engine, role, is_tp, vllm_config)
+
+            if self.do_async_save:
+                logger.info("LMCache vLLM async saving enabled")
+                self._async_saver: Optional[AsyncSaver] = AsyncSaver()
+            else:
+                # Compatibility with older version of vLLM V1 Connector API.
+                logger.info("LMCache vLLM async saving disabled")
+                self._async_saver = None
 
         self.kv_caches: dict[str, torch.Tensor] = {}
 
@@ -409,12 +419,6 @@ class LMCacheConnectorV1Impl:
         self.skip_last_n_tokens = \
             vllm_config.kv_transfer_config.get_from_extra_config(
                 "skip_last_n_tokens", 0)
-
-        if hasattr(parent, "get_finished"):
-            self._async_saver: Optional[AsyncSaver] = AsyncSaver()
-        else:
-            # Compatibility with older version of vLLM V1 Connector API.
-            self._async_saver = None
 
     def _init_kv_caches_from_forward_context(
             self, forward_context: "ForwardContext"):
@@ -749,7 +753,7 @@ class LMCacheConnectorV1Impl:
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, Optional[dict[str, Any]]]:
-        assert self._async_saver is not None
+        assert self.do_async_save
         # Return True to indicate that saving may be happening
         # asynchronously.
         return True, None
