@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
 import threading
 from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
@@ -374,7 +374,8 @@ class LMCacheConnectorV1Impl:
         self._parent = parent
         self.kv_role = vllm_config.kv_transfer_config.kv_role
         is_tp = vllm_config.parallel_config.tensor_parallel_size > 1
-        self.do_async_save = hasattr(parent, "get_finished")
+        self.do_async_save = hasattr(parent, "get_finished") and (os.getenv(
+            "LMCACHE_DISABLE_ASYNC_SAVE", "0") != "1")
         if role == KVConnectorRole.SCHEDULER:
             self.lookup_client = LMCacheLookupClient(role, is_tp, vllm_config)
         else:
