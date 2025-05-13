@@ -607,8 +607,9 @@ class LMCacheConnectorV1Impl:
         self, finished_req_ids: set[str]
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
         """Finished loading, saving request ids."""
-        assert self._async_saver is not None
-        return None, self._async_saver.get_finished(finished_req_ids)
+        if self._async_saver is not None:
+            return None, self._async_saver.get_finished(finished_req_ids)
+        return None, None
 
     ###################
     # Scheduler side APIs
@@ -754,7 +755,6 @@ class LMCacheConnectorV1Impl:
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, Optional[dict[str, Any]]]:
-        assert self.do_async_save
         # Return True to indicate that saving may be happening
         # asynchronously.
-        return True, None
+        return self.do_async_save, None
