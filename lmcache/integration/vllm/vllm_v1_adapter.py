@@ -16,7 +16,7 @@ import threading
 from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cached_property, partial
 from queue import Queue
 from typing import TYPE_CHECKING, Optional, Any, Callable, Sequence
 
@@ -318,8 +318,11 @@ class AsyncSaver:
     def __init__(self):
         self._async_save_lock = threading.Lock()
         self._async_save_reqs = defaultdict[str, ReqState](ReqState)
+        self._cuda_stream = torch.cuda.Stream()
         self._async_save_thread = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="LMCache_AsyncSave")
+            initializer=partial(torch.cuda.set_stream, self._cuda_stream),
+            max_workers=1,
+            thread_name_prefix="LMCache_AsyncSave")
         self._finished_saving_reqs = Queue[str]()
 
     def dispatch_async_save_requests(
