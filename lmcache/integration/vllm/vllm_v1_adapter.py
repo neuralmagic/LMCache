@@ -609,9 +609,9 @@ class LMCacheConnectorV1Impl:
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
-        """Finished loading, saving request ids."""
+        """Finished (saving, loading) request ids."""
         if self._async_saver is not None:
-            return None, self._async_saver.get_finished(finished_req_ids)
+            return self._async_saver.get_finished(finished_req_ids), None
         return None, None
 
     ###################
