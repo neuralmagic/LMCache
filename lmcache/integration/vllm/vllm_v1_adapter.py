@@ -360,7 +360,7 @@ class AsyncSaver:
                 if req_state := self._async_save_reqs.get(req_id):
                     with self._async_save_lock:
                         req_state.finished = True
-                        if req_state.finished and not req_state.saves_pending:
+                        if not req_state.saves_pending:
                             finished_reqs.add(req_id)
                             del self._async_save_reqs[req_id]
 
